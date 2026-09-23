@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>ウォッチリスト｜保有理由ダッシュボード</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/marked@12.0.0/marked.min.js"></script>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{font-family:"Hiragino Sans","Yu Gothic",system-ui,sans-serif;background:#0d1117;color:#e6edf3}
+  .app{display:flex;min-height:100vh}
+  .rail{width:220px;flex-shrink:0;border-right:1px solid #21262d;padding:14px 10px;position:sticky;top:0;height:100vh;overflow-y:auto}
+  .rail h3{font-size:11px;color:#7d8590;text-transform:uppercase;letter-spacing:.5px;margin:2px 6px 12px}
+  .stock{padding:10px;border-radius:10px;cursor:pointer;margin-bottom:6px;border:1px solid transparent}
+  .stock:hover{background:#161b22}.stock.active{background:#161b22;border-color:#1f6feb}
+  .stock .sn{font-weight:700;font-size:13.5px;line-height:1.3}.stock .sc{color:#7d8590;font-size:11px}
+  .stock .sp{font-size:15px;font-weight:700;margin-top:4px}
+  .stock .v2{font-size:10.5px;margin-top:3px}
+  .chip{display:inline-block;font-size:10px;padding:1px 6px;border-radius:20px;font-weight:600;margin-top:5px}
+  .st-hold{background:#3fb95022;color:#3fb950}.st-watch{background:#7d859022;color:#adbac7}
+  .st-limit{background:#d2992222;color:#e3b341}.st-sold{background:#6e768133;color:#6e7681}
+  .main{flex:1;padding:22px;max-width:1000px}
+  .head{display:flex;align-items:flex-end;justify-content:space-between;flex-wrap:wrap;gap:12px;border-bottom:1px solid #21262d;padding-bottom:14px;margin-bottom:18px}
+  .name{font-size:23px;font-weight:700}.code{color:#7d8590;font-size:13px;margin-left:8px}
+  .price{font-size:36px;font-weight:800;letter-spacing:-1px}.chg{font-size:15px;font-weight:600}
+  .up{color:#3fb950}.down{color:#f85149}.asof{color:#6e7681;font-size:11px;margin-top:4px}
+  .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(128px,1fr));gap:10px;margin-bottom:18px}
+  .card{background:#161b22;border:1px solid #21262d;border-radius:11px;padding:12px 14px}
+  .card .label{color:#7d8590;font-size:11px;margin-bottom:5px}.card .val{font-size:20px;font-weight:700}
+  .card .sub{color:#6e7681;font-size:10.5px;margin-top:3px}
+  .hl{border-color:#1f6feb;box-shadow:0 0 0 1px #1f6feb33}.warn{border-color:#f8514955}
+  .section{background:#161b22;border:1px solid #21262d;border-radius:11px;padding:18px;margin-bottom:16px}
+  .section h2{font-size:14px;font-weight:700;margin-bottom:12px}
+  .rangebar{position:relative;height:44px;margin:26px 4px 32px}
+  .track{position:absolute;top:18px;left:0;right:0;height:8px;border-radius:4px;background:linear-gradient(90deg,#f85149,#d29922,#3fb950)}
+  .marker{position:absolute;top:6px;width:3px;height:32px;background:#fff;border-radius:2px}
+  .mlabel{position:absolute;top:-16px;transform:translateX(-50%);font-size:11px;font-weight:700;white-space:nowrap}
+  .mlabel .sm{display:block;color:#7d8590;font-weight:400;font-size:10px;text-align:center}
+  .legend{display:flex;gap:16px;font-size:12px;color:#adbac7;margin-bottom:8px}
+  .legend i{display:inline-block;width:14px;height:3px;vertical-align:middle;margin-right:5px}
+  .prose{color:#adbac7;font-size:13px;line-height:1.75}
+  .prose b,.prose strong{color:#e6edf3}.prose ul{margin:4px 0 4px 18px}.prose p{margin:6px 0}
+  canvas{max-height:300px}
+  .foot{color:#6e7681;font-size:11px;text-align:center;margin-top:14px;line-height:1.6}
+  .empty{padding:60px;text-align:center;color:#7d8590}
+  @media(max-width:640px){.app{flex-direction:column}.rail{width:auto;height:auto;position:static;border-right:none;border-bottom:1px solid #21262d;display:flex;gap:8px;overflow-x:auto}.rail h3{display:none}.stock{min-width:150px}}
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="rail"><h3>銘柄</h3><div id="list"></div></div>
+  <div class="main" id="main"><div class="empty">読み込み中…</div></div>
+</div>
+<script>
+let STOCKS=[], selected=null, chart=null;
+const ST={"保有中":"st-hold","監視中":"st-watch","指値待ち":"st-limit","売却済":"st-sold"};
+const curSym=c=>c==="USD"?"$":c==="EUR"?"€":"¥";
+const fmt=(v,c)=>v==null?"—":curSym(c)+Math.round(v).toLocaleString();
+const pct=v=>v==null?"—":(v>=0?"+":"")+v.toFixed(Math.abs(v)>=100?0:1)+"%";
+const num=(v,d=2)=>v==null?"—":Number(v).toFixed(d);
+
+function renderList(){
+  document.getElementById("list").innerHTML=STOCKS.map(r=>{
+    const vs200=r.sma200?(r.price/r.sma200-1)*100:null;
+    return '<div class="stock '+(r.code===selected?"active":"")+'" data-code="'+r.code+'">'+
+      '<div class="sn">'+r.name+'</div><div class="sc">'+r.code+'</div>'+
+      '<div class="sp">'+fmt(r.price,r.currency)+' <span class="'+(r.changePct>=0?"up":"down")+'" style="font-size:11px">'+pct(r.changePct)+'</span></div>'+
+      '<div class="v2 '+(vs200<0?"down":"up")+'">200日線比 '+pct(vs200)+'</div>'+
+      '<span class="chip '+(ST[r.status]||"st-watch")+'">'+r.status+'</span></div>';
+  }).join("");
+  document.querySelectorAll(".stock").forEach(el=>el.onclick=()=>{selected=el.dataset.code;renderList();renderMain();});
+}
+function md(s){return s?marked.parse(s):'<span style="color:#6e7681">（未記入）</span>';}
+function renderMain(){
+  const r=STOCKS.find(x=>x.code===selected); const main=document.getElementById("main");
+  if(!r){main.innerHTML='<div class="empty">銘柄を選択</div>';return;}
+  const cur=r.currency||"JPY";
+  const pos=(r.high52>r.low52)?((r.price-r.low52)/(r.high52-r.low52)*100):null;
+  const fromPeak=r.high52?(r.price/r.high52-1)*100:null;
+  const vs200=r.sma200?(r.price/r.sma200-1)*100:null; const below=vs200<0;
+  main.innerHTML=
+   '<div class="head"><div><div class="name">'+r.name+' <span class="code">'+r.code+(r.market?" / "+r.market:"")+'</span></div>'+
+     '<div class="asof">Yahoo Finance（約15〜20分ディレイ）｜通貨: '+cur+'｜データ: '+(window.__ASOF||"—")+'時点</div></div>'+
+     '<div style="text-align:right"><div class="price">'+fmt(r.price,cur)+'</div>'+
+     '<div class="chg '+(r.changePct>=0?"up":"down")+'">'+(r.changePct>=0?"▲ ":"▼ ")+pct(r.changePct)+'</div></div></div>'+
+   '<div class="cards">'+
+     '<div class="card hl"><div class="label">PER(会社予想)</div><div class="val">'+num(r.per,1)+'倍</div><div class="sub">益回り≈'+(r.per?(100/r.per).toFixed(1)+"%":"—")+'</div></div>'+
+     '<div class="card hl"><div class="label">EPS(会社予想)</div><div class="val">'+fmt(r.eps,cur)+'</div><div class="sub">予想割れでPER急騰</div></div>'+
+     '<div class="card '+(below?"warn":"")+'"><div class="label">200日移動平均</div><div class="val">'+fmt(r.sma200,cur)+'</div><div class="sub" style="color:'+(below?"#f85149":"#3fb950")+'">'+(vs200!=null?"現在値は"+pct(vs200)+(below?"（線の下）":"（線の上）"):"—")+'</div></div>'+
+     '<div class="card"><div class="label">PBR(実績)</div><div class="val">'+num(r.pbr,2)+'倍</div></div>'+
+     '<div class="card"><div class="label">配当利回り</div><div class="val">'+num(r.divYield,2)+'%</div></div>'+
+     '<div class="card"><div class="label">時価総額</div><div class="val" style="font-size:16px">'+(r.marketCap||"—")+'</div></div>'+
+   '</div>'+
+   '<div class="section"><h2>52週レンジの中の"現在地"</h2><div class="rangebar"><div class="track"></div>'+
+     '<div class="marker" style="left:0%;background:#f85149"></div><div class="mlabel" style="left:0%"><span class="sm">安値</span>'+fmt(r.low52,cur)+'</div>'+
+     (pos!=null?'<div class="marker" style="left:'+pos.toFixed(1)+'%"></div><div class="mlabel" style="left:'+pos.toFixed(1)+'%;color:#fff"><span class="sm">現在</span>'+fmt(r.price,cur)+'</div>':'')+
+     '<div class="marker" style="left:100%;background:#3fb950"></div><div class="mlabel" style="left:100%"><span class="sm">高値</span>'+fmt(r.high52,cur)+'</div></div>'+
+     '<div class="prose">'+(pos!=null?'現在値はレンジの<b>下から約'+pos.toFixed(0)+'%</b>。ピークから<b>'+pct(fromPeak)+'</b>。':'')+'</div></div>'+
+   '<div class="section"><h2>株価と200日移動平均線（日足・直近約1年）</h2>'+
+     '<div class="legend"><span><i style="background:#58a6ff"></i>終値</span><span><i style="background:#e3b341"></i>200日移動平均線</span></div>'+
+     '<canvas id="chart"></canvas></div>'+
+   '<div class="section"><h2>なぜ買う／買ってるか（thesis）</h2><div class="prose">'+md(r.thesis)+'</div></div>'+
+   '<div class="section"><h2>ドライバー</h2><div class="prose">'+md(r.drivers)+'</div></div>'+
+   '<div class="section"><h2>エントリー・撤退方針</h2><div class="prose">'+md(r.entryPlan)+'</div></div>'+
+   '<div class="foot">株価・指標はYahoo Financeより取得（約15〜20分ディレイ）。EPS/PERは会社予想。本資料は分析であり投資推奨ではありません。</div>';
+  drawChart(r,cur);
+}
+function drawChart(r,cur){
+  const cv=document.getElementById("chart"); if(!cv||!r.chart) return;
+  if(chart){chart.destroy();chart=null;}
+  const labels=r.chart.ts.map(t=>{const d=new Date(t*1000);return (d.getMonth()+1)+"/"+d.getDate();});
+  chart=new Chart(cv,{type:"line",data:{labels,datasets:[
+    {label:"終値",data:r.chart.close,borderColor:"#58a6ff",borderWidth:2,pointRadius:0,fill:true,tension:0.2,
+     backgroundColor:(c)=>{const g=c.chart.ctx.createLinearGradient(0,0,0,300);g.addColorStop(0,"#58a6ff40");g.addColorStop(1,"#58a6ff00");return g;}},
+    {label:"200日移動平均線",data:r.chart.sma,borderColor:"#e3b341",borderWidth:2,borderDash:[6,4],pointRadius:0,fill:false,tension:0.1}
+  ]},options:{responsive:true,interaction:{mode:"index",intersect:false},plugins:{legend:{display:false},
+    tooltip:{callbacks:{label:(i)=>i.dataset.label+": "+(i.parsed.y!=null?curSym(cur)+Math.round(i.parsed.y).toLocaleString():"-")}}},
+    scales:{x:{grid:{color:"#21262d"},ticks:{color:"#7d8590",maxTicksLimit:12}},
+            y:{grid:{color:"#21262d"},ticks:{color:"#7d8590",callback:(v)=>curSym(cur)+(v/1000)+"k"}}}}});
+}
+fetch("./data.json").then(r=>r.json()).then(d=>{
+  STOCKS=d.stocks||d; window.__ASOF=d.asOf||"2026-09-24";
+  selected=STOCKS[0]?STOCKS[0].code:null; renderList(); renderMain();
+}).catch(e=>{document.getElementById("main").innerHTML='<div class="empty">データ読み込み失敗: '+e.message+'</div>';});
+</script>
+</body>
+</html>
