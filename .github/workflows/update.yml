@@ -1,0 +1,50 @@
+name: Update Watchlist
+
+on:
+  schedule:
+    # 09:00 UTC = 18:00 JST, 月〜金
+    - cron: '0 9 * * 1-5'
+  workflow_dispatch:
+    inputs:
+      force:
+        description: '価格が変わっていなくてもpush/通知する'
+        required: false
+        default: 'false'
+        type: boolean
+
+permissions:
+  contents: write
+
+concurrency:
+  group: watchlist-update
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Update data.json
+        id: update
+        env:
+          GCHAT_WEBHOOK: ${{ secrets.GCHAT_WEBHOOK }}
+        run: |
+          if [ "${{ github.event.inputs.force }}" = "true" ]; then
+            python3 .github/scripts/update.py --force
+          else
+            python3 .github/scripts/update.py
+          fi
+
+      - name: Commit and push
+        if: steps.update.outputs.changed == 'true'
+        run: |
+          git config user.name "watchlist-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add data.json
+          git commit -m "自動更新 $(date -u -d '+9 hours' '+%Y-%m-%d %H:%M') JST"
+          git push
