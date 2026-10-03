@@ -62,6 +62,15 @@ const num=(v,d=2)=>v==null?"—":Number(v).toFixed(d);
 
 function renderList(){
   document.getElementById("list").innerHTML=STOCKS.map(r=>{
+    if(r.type==="index"){
+      const mdc=r.miniDeadCross||{};
+      const label=mdc.warning?"⚠️ 警戒中":(mdc.crossed?"5w<13w(範囲内)":"通常");
+      return '<div class="stock '+(r.code===selected?"active":"")+'" data-code="'+r.code+'">'+
+        '<div class="sn">'+r.name+'</div><div class="sc">'+(r.market||"指数")+'</div>'+
+        '<div class="sp">'+fmt(r.price,r.currency)+' <span class="'+(r.changePct>=0?"up":"down")+'" style="font-size:11px">'+pct(r.changePct)+'</span></div>'+
+        '<div class="v2" style="color:'+(mdc.warning?"#f85149":"#7d8590")+'">'+label+'</div>'+
+        '<span class="chip '+(mdc.warning?"st-limit":"st-watch")+'">アノマリー監視</span></div>';
+    }
     const vs200=r.sma200?(r.price/r.sma200-1)*100:null;
     return '<div class="stock '+(r.code===selected?"active":"")+'" data-code="'+r.code+'">'+
       '<div class="sn">'+r.name+'</div><div class="sc">'+r.code+'</div>'+
@@ -72,9 +81,48 @@ function renderList(){
   document.querySelectorAll(".stock").forEach(el=>el.onclick=()=>{selected=el.dataset.code;renderList();renderMain();});
 }
 function md(s){return s?marked.parse(s):'<span style="color:#6e7681">（未記入）</span>';}
+function renderIndexMain(r){
+  const main=document.getElementById("main"); const cur=r.currency||"USD";
+  const mdc=r.miniDeadCross||{};
+  const banner=mdc.warning
+    ? '<div class="section" style="border-color:#f85149;background:#f8514914"><h2 style="color:#f85149">⚠️ ミニデッドクロス警戒中</h2>'+
+      '<div class="prose">5週移動平均線が13週移動平均線を下回り、かつ現在値（'+fmt(r.price,cur)+'）がクロス前の持ち合いレンジ高値（'+fmt(mdc.rangeHigh,cur)+'、'+(mdc.crossDate||"—")+'クロス）を<b>上に抜け返せていません</b>。1929年NYダウ・94年米株・90年日経平均と同型のパターンです。</div></div>'
+    : (mdc.crossed
+      ? '<div class="section" style="border-color:#d29922;background:#d2992214"><h2 style="color:#e3b341">5週線が13週線を下回っています</h2><div class="prose">ただし現在値がクロス前のレンジ高値（'+fmt(mdc.rangeHigh,cur)+'）を上回っており、「ミニデッドクロス警戒」の2条件目（抜け返せていない）はまだ満たしていません。</div></div>'
+      : '<div class="section" style="border-color:#3fb950;background:#3fb95014"><h2 style="color:#3fb950">通常（5週線 &gt; 13週線）</h2><div class="prose">現在、週足5週移動平均線が13週移動平均線を上回っており、ミニデッドクロスの警戒状態ではありません。</div></div>');
+  main.innerHTML=
+   '<div class="head"><div><div class="name">'+r.name+' <span class="code">'+(r.symbol||r.code)+(r.market?" / "+r.market:"")+'</span></div>'+
+     '<div class="asof">Yahoo Finance 週足（約15〜20分ディレイ）｜通貨: '+cur+'｜データ: '+(window.__ASOF||"—")+'時点</div></div>'+
+     '<div style="text-align:right"><div class="price">'+fmt(r.price,cur)+'</div>'+
+     '<div class="chg '+(r.changePct>=0?"up":"down")+'">'+(r.changePct>=0?"▲ ":"▼ ")+pct(r.changePct)+'（週次）</div></div></div>'+
+   banner+
+   '<div class="section"><h2>週足：終値／5週移動平均線／13週移動平均線</h2>'+
+     '<div class="legend"><span><i style="background:#58a6ff"></i>終値</span><span><i style="background:#3fb950"></i>5週移動平均線</span><span><i style="background:#f85149"></i>13週移動平均線</span></div>'+
+     '<canvas id="chart"></canvas></div>'+
+   '<div class="section"><h2>このアノマリーについて</h2><div class="prose">'+md(r.thesis)+'</div></div>'+
+   '<div class="section"><h2>警戒の判定条件</h2><div class="prose">'+md(r.drivers)+'</div></div>'+
+   '<div class="section"><h2>使い方の目安</h2><div class="prose">'+md(r.entryPlan)+'</div></div>'+
+   '<div class="foot">株価・指標はYahoo Financeより取得（約15〜20分ディレイ）。この警戒判定は移動平均の機械的クロスによる簡易ロジックであり、投資推奨ではありません。</div>';
+  drawIndexChart(r,cur);
+}
+function drawIndexChart(r,cur){
+  const cv=document.getElementById("chart"); if(!cv||!r.weekly) return;
+  if(chart){chart.destroy();chart=null;}
+  const labels=r.weekly.ts.map(t=>{const d=new Date(t*1000);return (d.getMonth()+1)+"/"+d.getDate();});
+  chart=new Chart(cv,{type:"line",data:{labels,datasets:[
+    {label:"終値",data:r.weekly.close,borderColor:"#58a6ff",borderWidth:2,pointRadius:0,fill:true,tension:0.15,
+     backgroundColor:(c)=>{const g=c.chart.ctx.createLinearGradient(0,0,0,300);g.addColorStop(0,"#58a6ff33");g.addColorStop(1,"#58a6ff00");return g;}},
+    {label:"5週移動平均線",data:r.weekly.sma5,borderColor:"#3fb950",borderWidth:2,pointRadius:0,fill:false,tension:0.1},
+    {label:"13週移動平均線",data:r.weekly.sma13,borderColor:"#f85149",borderWidth:2,borderDash:[6,4],pointRadius:0,fill:false,tension:0.1}
+  ]},options:{responsive:true,interaction:{mode:"index",intersect:false},plugins:{legend:{display:false},
+    tooltip:{callbacks:{label:(i)=>i.dataset.label+": "+(i.parsed.y!=null?curSym(cur)+Math.round(i.parsed.y).toLocaleString():"-")}}},
+    scales:{x:{grid:{color:"#21262d"},ticks:{color:"#7d8590",maxTicksLimit:12}},
+            y:{grid:{color:"#21262d"},ticks:{color:"#7d8590",callback:(v)=>curSym(cur)+(v/1000)+"k"}}}}});
+}
 function renderMain(){
   const r=STOCKS.find(x=>x.code===selected); const main=document.getElementById("main");
   if(!r){main.innerHTML='<div class="empty">銘柄を選択</div>';return;}
+  if(r.type==="index"){renderIndexMain(r);return;}
   const cur=r.currency||"JPY";
   const pos=(r.high52>r.low52)?((r.price-r.low52)/(r.high52-r.low52)*100):null;
   const fromPeak=r.high52?(r.price/r.high52-1)*100:null;
@@ -120,7 +168,7 @@ function drawChart(r,cur){
             y:{grid:{color:"#21262d"},ticks:{color:"#7d8590",callback:(v)=>curSym(cur)+(v/1000)+"k"}}}}});
 }
 fetch("./data.json").then(r=>r.json()).then(d=>{
-  STOCKS=d.stocks||d; window.__ASOF=d.asOf||"2026-09-24";
+  STOCKS=(d.stocks||d||[]).concat(d.indices||[]); window.__ASOF=d.asOf||"2026-09-24";
   selected=STOCKS[0]?STOCKS[0].code:null; renderList(); renderMain();
 }).catch(e=>{document.getElementById("main").innerHTML='<div class="empty">データ読み込み失敗: '+e.message+'</div>';});
 </script>
