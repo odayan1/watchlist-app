@@ -33,6 +33,7 @@ jobs:
         id: update
         env:
           GCHAT_WEBHOOK: ${{ secrets.GCHAT_WEBHOOK }}
+          JQUANTS_API_KEY: ${{ secrets.JQUANTS_API_KEY }}
         run: |
           if [ "${{ github.event.inputs.force }}" = "true" ]; then
             python3 .github/scripts/update.py --force
