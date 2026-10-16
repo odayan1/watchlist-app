@@ -137,13 +137,16 @@ def main():
         vs200 = (q["price"]/q["sma200"]-1)*100 if q["sma200"] else None
         arrow = "▲" if q["changePct"] >= 0 else "▼"
         v = f"（200日線{'+' if vs200 and vs200>=0 else ''}{vs200:.0f}%）" if vs200 is not None else ""
-        lines.append(f"・{s['name']}({s['code']}): ¥{round(q['price']):,} {arrow}{q['changePct']:+.2f}% {v}")
+        cur = q.get("currency") or "JPY"
+        ptxt = f"¥{round(q['price']):,}" if cur == "JPY" else f"${q['price']:,.2f}"
+        lines.append(f"・{s['name']}({s['code']}): {ptxt} {arrow}{q['changePct']:+.2f}% {v}")
         if old_price != q["price"] or FORCE:
             changed.append(s["code"])
 
     # --- 規制・指定チェック（2026-10-06追加） ---
     jq_date = now.strftime("%Y%m%d")
-    codes4 = [s["code"] for s in stocks]
+    jp_stocks = [s for s in stocks if str(s.get("symbol", "")).endswith(".T")]  # 規制チェックは日本株のみ
+    codes4 = [s["code"] for s in jp_stocks]
     margin_flags = {}
     api_key = os.environ.get("JQUANTS_API_KEY")
     if api_key:
@@ -159,7 +162,7 @@ def main():
     except Exception as e:
         print("ss-reg fetch fail", e)
 
-    for s in stocks:
+    for s in jp_stocks:
         code = s["code"]
         reg = s.get("regulation", {})
         old_daily = bool(reg.get("dailyPublication"))

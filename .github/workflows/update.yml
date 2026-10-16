@@ -2,8 +2,9 @@ name: Update Watchlist
 
 on:
   schedule:
-    # 09:00 UTC = 18:00 JST, 月〜金
-    - cron: '0 9 * * 1-5'
+    # 08:23 UTC = 17:23 JST, 月〜金。
+    # 毎時0分はGitHub全体で混雑し数時間遅延・スキップされやすい（実績: 18:00指定→22時〜翌1時台に実行）ため、半端な分にずらす。
+    - cron: '23 8 * * 1-5'
   workflow_dispatch:
     inputs:
       force:
