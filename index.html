@@ -4,7 +4,7 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>ウォッチリスト｜保有理由ダッシュボード</title>
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script src="./lightweight-charts.standalone.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/marked@12.0.0/marked.min.js"></script>
 <style>
   *{margin:0;padding:0;box-sizing:border-box}
@@ -41,7 +41,16 @@
   .legend i{display:inline-block;width:14px;height:3px;vertical-align:middle;margin-right:5px}
   .prose{color:#adbac7;font-size:13px;line-height:1.75}
   .prose b,.prose strong{color:#e6edf3}.prose ul{margin:4px 0 4px 18px}.prose p{margin:6px 0}
-  canvas{max-height:300px}
+  .lwc{position:relative;height:420px;border-radius:10px;overflow:hidden;border:1px solid #21262d}
+  .lwc .cv{position:absolute;inset:0}
+  .lwc .lg{position:absolute;left:8px;top:6px;z-index:5;font-size:12px;line-height:1.5;pointer-events:none;background:rgba(13,17,23,.78);padding:4px 8px;border-radius:8px;color:#adbac7}
+  .lwc .lg b.u{color:#f87171}.lwc .lg b.d{color:#60a5fa}
+  .tbar{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px}
+  .tbar button{background:#0d1117;color:#adbac7;border:1px solid #30363d;border-radius:16px;padding:4px 11px;font-size:12px;font-weight:600;cursor:pointer;font-family:inherit}
+  .tbar button.on{background:#1f6feb;color:#fff;border-color:#1f6feb}
+  .tbar .sp{flex:1}
+  .legend i.dash{background:repeating-linear-gradient(90deg,#e6edf3 0 4px,transparent 4px 7px)!important}
+  @media(max-width:640px){.lwc{height:360px}}
   .foot{color:#6e7681;font-size:11px;text-align:center;margin-top:14px;line-height:1.6}
   .empty{padding:60px;text-align:center;color:#7d8590}
   @media(max-width:640px){.app{flex-direction:column}.rail{width:auto;height:auto;position:static;border-right:none;border-bottom:1px solid #21262d;display:flex;gap:8px;overflow-x:auto}.rail h3{display:none}.stock{min-width:150px}}
@@ -96,9 +105,9 @@ function renderIndexMain(r){
      '<div style="text-align:right"><div class="price">'+fmt(r.price,cur)+'</div>'+
      '<div class="chg '+(r.changePct>=0?"up":"down")+'">'+(r.changePct>=0?"▲ ":"▼ ")+pct(r.changePct)+'（週次）</div></div></div>'+
    banner+
-   '<div class="section"><h2>週足：終値／5週移動平均線／13週移動平均線</h2>'+
-     '<div class="legend"><span><i style="background:#58a6ff"></i>終値</span><span><i style="background:#3fb950"></i>5週移動平均線</span><span><i style="background:#f85149"></i>13週移動平均線</span></div>'+
-     '<canvas id="chart"></canvas></div>'+
+   '<div class="section"><h2>週足チャート：5週移動平均線／13週移動平均線</h2>'+
+     '<div class="legend"><span><i style="background:#3fb950"></i>5週移動平均線</span><span><i style="background:#f85149"></i>13週移動平均線</span></div>'+
+     '<div class="lwc"><div class="cv" id="chart"></div><div class="lg" id="lg"></div></div></div>'+
    '<div class="section"><h2>このアノマリーについて</h2><div class="prose">'+md(r.thesis)+'</div></div>'+
    '<div class="section"><h2>警戒の判定条件</h2><div class="prose">'+md(r.drivers)+'</div></div>'+
    '<div class="section"><h2>使い方の目安</h2><div class="prose">'+md(r.entryPlan)+'</div></div>'+
@@ -106,18 +115,14 @@ function renderIndexMain(r){
   drawIndexChart(r,cur);
 }
 function drawIndexChart(r,cur){
-  const cv=document.getElementById("chart"); if(!cv||!r.weekly) return;
-  if(chart){chart.destroy();chart=null;}
-  const labels=r.weekly.ts.map(t=>{const d=new Date(t*1000);return (d.getMonth()+1)+"/"+d.getDate();});
-  chart=new Chart(cv,{type:"line",data:{labels,datasets:[
-    {label:"終値",data:r.weekly.close,borderColor:"#58a6ff",borderWidth:2,pointRadius:0,fill:true,tension:0.15,
-     backgroundColor:(c)=>{const g=c.chart.ctx.createLinearGradient(0,0,0,300);g.addColorStop(0,"#58a6ff33");g.addColorStop(1,"#58a6ff00");return g;}},
-    {label:"5週移動平均線",data:r.weekly.sma5,borderColor:"#3fb950",borderWidth:2,pointRadius:0,fill:false,tension:0.1},
-    {label:"13週移動平均線",data:r.weekly.sma13,borderColor:"#f85149",borderWidth:2,borderDash:[6,4],pointRadius:0,fill:false,tension:0.1}
-  ]},options:{responsive:true,interaction:{mode:"index",intersect:false},plugins:{legend:{display:false},
-    tooltip:{callbacks:{label:(i)=>i.dataset.label+": "+(i.parsed.y!=null?curSym(cur)+Math.round(i.parsed.y).toLocaleString():"-")}}},
-    scales:{x:{grid:{color:"#21262d"},ticks:{color:"#7d8590",maxTicksLimit:12}},
-            y:{grid:{color:"#21262d"},ticks:{color:"#7d8590",callback:(v)=>curSym(cur)+(v/1000)+"k"}}}}});
+  const w=r.weekly; if(!w||!document.getElementById("chart")) return;
+  const days=w.ts.map(t=>jd(t));
+  const rows=days.map((d,i)=>[d,w.open?w.open[i]:null,w.high?w.high[i]:null,w.low?w.low[i]:null,w.close[i],null]);
+  const c=newChart(cur,false);
+  if(w.open) c.candle.setData(rows.map(x=>({time:x[0],open:x[1],high:x[2],low:x[3],close:x[4]})));
+  else c.candle.setData([]), c.line.setData(rows.map(x=>({time:x[0],value:x[4]})));
+  addLine(c,days,w.sma5,"#3fb950",2); addLine(c,days,w.sma13,"#f85149",2,true);
+  c.ch.timeScale().fitContent(); bindLegend(c,rows,cur,"の週");
 }
 function renderMain(){
   const r=STOCKS.find(x=>x.code===selected); const main=document.getElementById("main");
@@ -145,27 +150,73 @@ function renderMain(){
      (pos!=null?'<div class="marker" style="left:'+pos.toFixed(1)+'%"></div><div class="mlabel" style="left:'+pos.toFixed(1)+'%;color:#fff"><span class="sm">現在</span>'+fmt(r.price,cur)+'</div>':'')+
      '<div class="marker" style="left:100%;background:#3fb950"></div><div class="mlabel" style="left:100%"><span class="sm">高値</span>'+fmt(r.high52,cur)+'</div></div>'+
      '<div class="prose">'+(pos!=null?'現在値はレンジの<b>下から約'+pos.toFixed(0)+'%</b>。ピークから<b>'+pct(fromPeak)+'</b>。':'')+'</div></div>'+
-   '<div class="section"><h2>株価と200日移動平均線（日足・直近約1年）</h2>'+
-     '<div class="legend"><span><i style="background:#58a6ff"></i>終値</span><span><i style="background:#e3b341"></i>200日移動平均線</span></div>'+
-     '<canvas id="chart"></canvas></div>'+
+   '<div class="section"><h2>チャート（ローソク足・移動平均線・出来高）</h2>'+
+     '<div class="tbar" id="ranges"></div>'+
+     '<div class="lwc"><div class="cv" id="chart"></div><div class="lg" id="lg"></div></div>'+
+     '<div class="legend" id="mkey" style="flex-wrap:wrap;margin-top:8px"></div></div>'+
    '<div class="section"><h2>なぜ買う／買ってるか（thesis）</h2><div class="prose">'+md(r.thesis)+'</div></div>'+
    '<div class="section"><h2>ドライバー</h2><div class="prose">'+md(r.drivers)+'</div></div>'+
    '<div class="section"><h2>エントリー・撤退方針</h2><div class="prose">'+md(r.entryPlan)+'</div></div>'+
-   '<div class="foot">株価・指標はYahoo Financeより取得（約15〜20分ディレイ）。EPS/PERは会社予想。本資料は分析であり投資推奨ではありません。</div>';
+   '<div class="foot">株価・指標はYahoo Financeより取得（約15〜20分ディレイ）。EPS/PERは会社予想。本資料は分析であり投資推奨ではありません。<br>Charts by <a href="https://www.tradingview.com/" style="color:#7d8590">TradingView Lightweight Charts™</a></div>';
   drawChart(r,cur);
 }
+// ===== Lightweight Charts（2026-10-21 Chart.jsから置き換え）=====
+const LW=LightweightCharts, UP="#ef4444", DN="#3b82f6";
+let RANGE=250;
+const jd=t=>{const d=new Date((t+9*3600)*1000);return d.toISOString().slice(0,10);};
+function newChart(cur,withVol){
+  if(chart){chart.remove();chart=null;}
+  const el=document.getElementById("chart");
+  const ch=LW.createChart(el,{autoSize:true,
+    layout:{background:{color:"#0d1117"},textColor:"#adbac7",fontSize:11,panes:{separatorColor:"#21262d",enableResize:false}},
+    grid:{vertLines:{color:"#161b22"},horzLines:{color:"#161b22"}},
+    crosshair:{mode:LW.CrosshairMode.Normal},rightPriceScale:{borderColor:"#30363d"},timeScale:{borderColor:"#30363d",rightOffset:4},
+    localization:{locale:"ja-JP",dateFormat:"yyyy/MM/dd",priceFormatter:p=>curSym(cur)+Math.round(p).toLocaleString()}});
+  chart=ch;
+  const candle=ch.addSeries(LW.CandlestickSeries,{upColor:UP,downColor:DN,borderVisible:false,wickUpColor:UP,wickDownColor:DN});
+  const line=ch.addSeries(LW.LineSeries,{color:"#58a6ff",lineWidth:2,priceLineVisible:false});
+  let vol=null;
+  if(withVol){ vol=ch.addSeries(LW.HistogramSeries,{priceFormat:{type:"volume"},priceLineVisible:false,lastValueVisible:false},1); ch.panes()[1].setHeight(80); }
+  return {ch,candle,line,vol};
+}
+function addLine(c,days,vals,color,w,dash){
+  const s=c.ch.addSeries(LW.LineSeries,{color,lineWidth:w,lineStyle:dash?LW.LineStyle.Dashed:LW.LineStyle.Solid,priceLineVisible:false,lastValueVisible:false,crosshairMarkerVisible:false});
+  s.setData(days.map((d,i)=>vals[i]==null?null:{time:d,value:vals[i]}).filter(Boolean)); return s;
+}
+function smaOf(close,n){return close.map((_,i)=>i<n-1?null:close.slice(i-n+1,i+1).reduce((a,b)=>a+b,0)/n);}
+function bindLegend(c,rows,cur,suf){
+  const lg=document.getElementById("lg"), f=v=>v==null?"—":curSym(cur)+Math.round(v).toLocaleString();
+  const show=x=>{ if(!x) return; const k=x[1]==null||x[4]>=x[1]?"u":"d";
+    lg.innerHTML=x[0].replaceAll("-","/")+(suf||"")+(x[1]==null?"　終 <b class=\""+k+"\">"+f(x[4])+"</b>":"<br>始 "+f(x[1])+"　高 "+f(x[2])+"　安 "+f(x[3])+"　終 <b class=\""+k+"\">"+f(x[4])+"</b>")+(x[5]!=null?"<br>出来高 "+x[5].toLocaleString():""); };
+  show(rows[rows.length-1]);
+  c.ch.subscribeCrosshairMove(p=>{ if(!p.time){show(rows[rows.length-1]);return;} show(rows.find(x=>x[0]===p.time)); });
+}
 function drawChart(r,cur){
-  const cv=document.getElementById("chart"); if(!cv||!r.chart) return;
-  if(chart){chart.destroy();chart=null;}
-  const labels=r.chart.ts.map(t=>{const d=new Date(t*1000);return (d.getMonth()+1)+"/"+d.getDate();});
-  chart=new Chart(cv,{type:"line",data:{labels,datasets:[
-    {label:"終値",data:r.chart.close,borderColor:"#58a6ff",borderWidth:2,pointRadius:0,fill:true,tension:0.2,
-     backgroundColor:(c)=>{const g=c.chart.ctx.createLinearGradient(0,0,0,300);g.addColorStop(0,"#58a6ff40");g.addColorStop(1,"#58a6ff00");return g;}},
-    {label:"200日移動平均線",data:r.chart.sma,borderColor:"#e3b341",borderWidth:2,borderDash:[6,4],pointRadius:0,fill:false,tension:0.1}
-  ]},options:{responsive:true,interaction:{mode:"index",intersect:false},plugins:{legend:{display:false},
-    tooltip:{callbacks:{label:(i)=>i.dataset.label+": "+(i.parsed.y!=null?curSym(cur)+Math.round(i.parsed.y).toLocaleString():"-")}}},
-    scales:{x:{grid:{color:"#21262d"},ticks:{color:"#7d8590",maxTicksLimit:12}},
-            y:{grid:{color:"#21262d"},ticks:{color:"#7d8590",callback:(v)=>curSym(cur)+(v/1000)+"k"}}}}});
+  const k=r.chart; if(!k||!document.getElementById("chart")) return;
+  const days=k.ts.map(jd), hasO=!!k.open;
+  const rows=days.map((d,i)=>[d,hasO?k.open[i]:null,hasO?k.high[i]:null,hasO?k.low[i]:null,k.close[i],k.volume?k.volume[i]:null]);
+  const c=newChart(cur,!!k.volume);
+  if(hasO) c.candle.setData(rows.map(x=>({time:x[0],open:x[1],high:x[2],low:x[3],close:x[4]})));
+  else c.line.setData(rows.map(x=>({time:x[0],value:x[4]})));
+  if(c.vol) c.vol.setData(rows.map(x=>({time:x[0],value:x[5]||0,color:(x[1]!=null&&x[4]<x[1])?"rgba(59,130,246,.5)":"rgba(239,68,68,.5)"})));
+  const MAS=[[5,"#f472b6",1],[25,"#e3b341",2],[75,"#3fb950",2]];
+  MAS.forEach(([n,col,w])=>addLine(c,days,smaOf(k.close,n),col,w));
+  addLine(c,days,k.sma||smaOf(k.close,200),"#e6edf3",1,true);
+  if(r.high52) c.candle.createPriceLine({price:r.high52,color:"#e3b341",lineWidth:1,lineStyle:LW.LineStyle.Dotted,axisLabelVisible:true,title:"52週高値"});
+  if(r.low52) c.candle.createPriceLine({price:r.low52,color:"#7d8590",lineWidth:1,lineStyle:LW.LineStyle.Dotted,axisLabelVisible:true,title:"52週安値"});
+  // 25日線と75日線のクロス
+  const a=smaOf(k.close,25), b=smaOf(k.close,75), mk=[];
+  for(let i=1;i<days.length;i++){ if([a[i-1],b[i-1],a[i],b[i]].includes(null)) continue;
+    if(a[i-1]<=b[i-1]&&a[i]>b[i]) mk.push({time:days[i],position:"belowBar",color:"#e3b341",shape:"arrowUp",text:"25↑75"});
+    if(a[i-1]>=b[i-1]&&a[i]<b[i]) mk.push({time:days[i],position:"aboveBar",color:"#93c5fd",shape:"arrowDown",text:"25↓75"}); }
+  if(hasO) LW.createSeriesMarkers(c.candle,mk);
+  const setR=()=>c.ch.timeScale().setVisibleLogicalRange({from:Math.max(0,days.length-RANGE),to:days.length+3});
+  const tb=document.getElementById("ranges");
+  const draw=()=>{ tb.innerHTML=""; [[60,"3か月"],[120,"半年"],[250,"1年"],[490,"2年"]].forEach(([v,l])=>{
+    const bt=document.createElement("button"); bt.textContent=l; if(v===RANGE) bt.className="on"; bt.onclick=()=>{RANGE=v;draw();setR();}; tb.appendChild(bt);}); };
+  draw(); setR(); bindLegend(c,rows,cur,"");
+  document.getElementById("mkey").innerHTML=MAS.map(([n,col])=>'<span><i style="background:'+col+'"></i>'+n+'日線</span>').join("")+
+    '<span><i class="dash"></i>200日線</span><span>▲▼ 25日線と75日線のクロス</span><span>点線＝52週の高値・安値</span>';
 }
 fetch("./data.json").then(r=>r.json()).then(d=>{
   STOCKS=(d.stocks||d||[]).concat(d.indices||[]); window.__ASOF=d.asOf||"2026-09-24";

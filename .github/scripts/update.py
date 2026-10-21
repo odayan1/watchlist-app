@@ -35,11 +35,13 @@ def fetch_chart(symbol):
     req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
     r = json.load(urllib.request.urlopen(req, timeout=30))["chart"]["result"][0]
     m = r["meta"]
-    ts, close = r["timestamp"], r["indicators"]["quote"][0]["close"]
-    pairs = [(t, c) for t, c in zip(ts, close) if c is not None]
-    ts = [p[0] for p in pairs]; close = [p[1] for p in pairs]
+    q = r["indicators"]["quote"][0]
+    # 2026-10-21: Lightweight Charts（ローソク足＋出来高）用に始値/高値/安値/出来高も保存。2年分まるごと保持（移動平均の計算用）
+    rows = [(t, o, h, l, c, v) for t, o, h, l, c, v in zip(r["timestamp"], q["open"], q["high"], q["low"], q["close"], q["volume"])
+            if None not in (o, h, l, c)]
+    ts = [x[0] for x in rows]; close = [x[4] for x in rows]
     sma = [round(sum(close[i-199:i+1])/200, 1) if i >= 199 else None for i in range(len(close))]
-    start = max(0, len(close)-260)
+    start = 0
     return {
         "price": round(m["regularMarketPrice"], 1),
         "changePct": round(m.get("regularMarketChangePercent", m.get("fulldayChangePercent", 0)), 2),
@@ -47,7 +49,9 @@ def fetch_chart(symbol):
         "low52": round(m["fiftyTwoWeekLow"], 1),
         "currency": m.get("currency", "JPY"),
         "sma200": sma[-1],
-        "chart": {"ts": ts[start:], "close": close[start:], "sma": sma[start:]},
+        "chart": {"ts": ts[start:], "open": [round(x[1], 1) for x in rows], "high": [round(x[2], 1) for x in rows],
+                  "low": [round(x[3], 1) for x in rows], "close": [round(c, 1) for c in close],
+                  "volume": [int(x[5] or 0) for x in rows], "sma": sma[start:]},
     }
 
 
