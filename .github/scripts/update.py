@@ -6,23 +6,31 @@
 #   数値が変わっていれば Google Chatスペースへ更新通知を投稿する（git commit/push はワークフロー側で実施）。
 #   thesis/drivers/entryPlan/status/name/symbol など人間の入力は一切触らない。
 #
-#   2026-10-06追加: 以下3つの規制・指定の「新規指定/解除」をJ-QuantsとJPX公式サイトから
+#   2026-10-06追加: 以下3つの規制・指定の「新規指定/解除」をJPX公式サイトから
 #   検知し、変化があればChat通知する（需給データそのものの通知が目的ではない）。
 #     ①空売り価格規制（前日比-10%超下落でトリガー、翌営業日に価格規制発動）
 #        → JPX公式サイトの当日分 "*_Stocks_Restricted_Nextday.csv" に載れば都度通知。
 #     ②日々公表銘柄 ③増担保規制
-#        → J-Quants API `/markets/margin-alert` の PubReason.DailyPublication /
-#          PubReason.Restricted フラグを毎日比較し、変化があれば通知。
+#        → JPX公式サイトの一覧表（HTML）に載っているかを毎日比較し、変化（載った/外れた）があれば通知。
+#            日々公表銘柄: https://www.jpx.co.jp/markets/equities/margin-daily/index.html
+#            増担保規制  : https://www.jpx.co.jp/markets/equities/margin-reg/index.html
+#              （「信用取引に関する規制を行っている銘柄」の表。実施日が翌営業日の銘柄も載る）
 #          直前の状態は各銘柄オブジェクトの "regulation" に保存して差分検知する。
-#          APIキーはリポジトリSecret `JQUANTS_API_KEY`（環境変数）から取得。
-import json, os, re, sys, urllib.request, datetime
+#          ※2026-11-01: J-Quants（有料プラン）解約に伴い、J-Quants `/markets/margin-alert` から置き換え。
+#          ページ取得や表の読み取りに失敗した日は前回の状態を据え置く（誤った「解除」通知を防ぐ）。
+#
+#   --dry-run: 取得・判定・通知文の組み立てまで行い、内容を表示するだけ。
+#              data.json の書き込み・git push・Chat投稿は一切しない（テスト用）。
+import html, json, os, re, sys, unicodedata, urllib.request, datetime
 
 REPO = os.getcwd()  # actions/checkout 済みのリポジトリルートを想定
 DATA = os.path.join(REPO, "data.json")
 PAGE = "https://odayan1.github.io/watchlist-app/"
 FORCE = "--force" in sys.argv
+DRY_RUN = "--dry-run" in sys.argv  # テスト用: 書き込み・push・Chat投稿をしない
 
-JQ_BASE = "https://api.jquants.com/v2"
+JPX_MARGIN_DAILY = "https://www.jpx.co.jp/markets/equities/margin-daily/index.html"  # 日々公表銘柄
+JPX_MARGIN_REG = "https://www.jpx.co.jp/markets/equities/margin-reg/index.html"  # 信用取引に関する規制（増担保）
 JPX_SSREG_INDEX = "https://www.jpx.co.jp/markets/equities/ss-reg/index.html"
 
 
@@ -75,25 +83,64 @@ def write_output(key, value):
             f.write(f"{key}={value}\n")
 
 
-def fetch_margin_alert_flags(api_key, date_str, codes4):
-    """J-Quants /markets/margin-alert から、指定した4桁コード群の
-    日々公表(DailyPublication)/増担保(Restricted)フラグを取得する。
-    その日のデータが無ければ空dictを返す（例外にしない＝価格更新は継続させる）。"""
-    url = f"{JQ_BASE}/markets/margin-alert?date={date_str}"
-    req = urllib.request.Request(url, headers={"x-api-key": api_key})
-    data = json.load(urllib.request.urlopen(req, timeout=30))
-    rows = data.get("data", [])
-    wanted = {c + "0": c for c in codes4}  # 4桁コード→J-Quants 5桁コード(末尾0)
+def _jpx_get(url):
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    return urllib.request.urlopen(req, timeout=30).read().decode("utf-8", "ignore")
+
+
+def _parse_jpx_tables(page_html):
+    """JPXのページをh2見出しごとに区切り、各見出し直下の表から {コード: 日付} を取り出す。
+    日付は「コード」列のすぐ右の列（指定日/実施日/解除日）。
+    戻り値: {見出し文字列: {コード: 日付}}。「コード」列の見出し行がある表だけを対象にする。"""
     out = {}
-    for r in rows:
-        code4 = wanted.get(r.get("Code", ""))
-        if not code4:
+    for part in re.split(r"<h2[^>]*>", page_html)[1:]:
+        if "</h2>" not in part:
             continue
-        reason = r.get("PubReason", {}) or {}
-        out[code4] = {
-            "dailyPublication": reason.get("DailyPublication") == "1",
-            "marginRestricted": reason.get("Restricted") == "1",
-        }
+        head, body = part.split("</h2>", 1)
+        title = unicodedata.normalize("NFKC", html.unescape(re.sub(r"<[^>]+>", "", head))).strip()
+        tbl = re.search(r"<table.*?</table>", body, re.S)
+        if not tbl:
+            continue
+        rows, ci = {}, None
+        for tr in re.findall(r"<tr.*?</tr>", tbl.group(0), re.S):
+            cells = [unicodedata.normalize("NFKC", html.unescape(re.sub(r"<[^>]+>", "", c))).strip()
+                     for c in re.findall(r"<t[dh][^>]*>(.*?)</t[dh]>", tr, re.S)]
+            if ci is None:
+                if "コード" in cells:
+                    ci = cells.index("コード")
+                continue
+            if len(cells) > ci + 1 and re.fullmatch(r"[0-9][0-9A-Z]{3}", cells[ci].upper()):
+                rows[cells[ci].upper()] = cells[ci + 1]
+        if ci is not None:
+            out[title] = rows
+    return out
+
+
+def fetch_jpx_list(url, current_title, released_title):
+    """JPX公式サイトの「指定中の銘柄」と「解除された銘柄（解除後1週間程度掲載）」の表を取得する。
+    戻り値: (指定中 {コード: 指定日/実施日}, 解除済み {コード: 解除日})。
+    想定の見出し・表が見つからない（ページの作りが変わった等）ときは例外にする
+    ＝呼び出し側で前回の状態を据え置き、誤った「解除」通知を出さないため。"""
+    tables = _parse_jpx_tables(_jpx_get(url))
+    if current_title not in tables:
+        raise RuntimeError(f"JPXページに「{current_title}」の表が見つかりません: {url}")
+    return tables[current_title], tables.get(released_title, {})
+
+
+def fetch_margin_status():
+    """日々公表銘柄・増担保規制（信用取引に関する規制）の現在の指定状況をJPX公式サイトから取得する。
+    戻り値: {"daily": (指定中, 解除済み) または None, "restricted": (指定中, 解除済み) または None}
+    取得に失敗した方は None（＝前回状態を据え置く）。"""
+    out = {"daily": None, "restricted": None}
+    try:
+        out["daily"] = fetch_jpx_list(JPX_MARGIN_DAILY, "日々公表銘柄", "日々公表銘柄を解除された銘柄")
+    except Exception as e:
+        print("margin-daily fetch fail", e)
+    try:
+        out["restricted"] = fetch_jpx_list(JPX_MARGIN_REG, "信用取引に関する規制を行っている銘柄",
+                                           "信用取引に関する規制を解除された銘柄")
+    except Exception as e:
+        print("margin-reg fetch fail", e)
     return out
 
 
@@ -150,16 +197,7 @@ def main():
     # --- 規制・指定チェック（2026-10-06追加） ---
     jq_date = now.strftime("%Y%m%d")
     jp_stocks = [s for s in stocks if str(s.get("symbol", "")).endswith(".T")]  # 規制チェックは日本株のみ
-    codes4 = [s["code"] for s in jp_stocks]
-    margin_flags = {}
-    api_key = os.environ.get("JQUANTS_API_KEY")
-    if api_key:
-        try:
-            margin_flags = fetch_margin_alert_flags(api_key, jq_date, codes4)
-        except Exception as e:
-            print("margin-alert fetch fail", e)
-    else:
-        print("JQUANTS_API_KEY not set, skip margin-alert check")
+    margin = fetch_margin_status()
     ss_restricted_today = set()
     try:
         ss_restricted_today = fetch_short_sale_restricted_today(jq_date)
@@ -171,20 +209,34 @@ def main():
         reg = s.get("regulation", {})
         old_daily = bool(reg.get("dailyPublication"))
         old_margin = bool(reg.get("marginRestricted"))
-        flags = margin_flags.get(code, {"dailyPublication": False, "marginRestricted": False})
-        new_daily, new_margin = flags["dailyPublication"], flags["marginRestricted"]
+        flags_d, flags_r = margin["daily"], margin["restricted"]
+        # 取得に失敗した方は前回状態を据え置く（失敗＝全銘柄「解除」と誤判定しないため）
+        new_daily = (code.upper() in flags_d[0]) if flags_d else old_daily
+        new_margin = (code.upper() in flags_r[0]) if flags_r else old_margin
         if new_daily and not old_daily:
-            reg_lines.append(f"🚨 {s['name']}({code}): 日々公表銘柄に新規指定されました"); changed.append(code)
+            reg_lines.append(f"🚨 {s['name']}({code}): 日々公表銘柄に新規指定されました（指定日 {flags_d[0][code.upper()]}）"); changed.append(code)
         elif old_daily and not new_daily:
-            reg_lines.append(f"✅ {s['name']}({code}): 日々公表指定が解除されました"); changed.append(code)
+            d = flags_d[1].get(code.upper())
+            reg_lines.append(f"✅ {s['name']}({code}): 日々公表指定が解除されました" + (f"（解除日 {d}）" if d else "")); changed.append(code)
         if new_margin and not old_margin:
-            reg_lines.append(f"🚨 {s['name']}({code}): 増担保規制の対象になりました"); changed.append(code)
+            reg_lines.append(f"🚨 {s['name']}({code}): 増担保規制の対象になりました（実施日 {flags_r[0][code.upper()]}）"); changed.append(code)
         elif old_margin and not new_margin:
-            reg_lines.append(f"✅ {s['name']}({code}): 増担保規制が解除されました"); changed.append(code)
+            d = flags_r[1].get(code.upper())
+            reg_lines.append(f"✅ {s['name']}({code}): 増担保規制が解除されました" + (f"（解除日 {d}）" if d else "")); changed.append(code)
         if code in ss_restricted_today:
             reg_lines.append(f"🚨 {s['name']}({code}): 本日-10%超下落でトリガー、明日の立会から空売り価格規制の対象になります")
             changed.append(code)
         s["regulation"] = {"dailyPublication": new_daily, "marginRestricted": new_margin, "checkedAt": now.strftime("%Y-%m-%d")}
+
+    body = (f"📈 *ウォッチリスト更新* ({now.strftime('%m/%d %H:%M')} JST)\n"
+            + "\n".join(lines)
+            + (f"\n\n⚠️ *規制・指定の変化*\n" + "\n".join(reg_lines) if reg_lines else "")
+            + f"\n<{PAGE}|アプリを開く>")
+    if DRY_RUN:
+        print("[dry-run] data.json/Chatには何もしません。changed:", changed)
+        print("[dry-run] regulation:", {s["code"]: s.get("regulation") for s in jp_stocks})
+        print("[dry-run] 通知文:\n" + body)
+        return
 
     doc = {"asOf": now.strftime("%Y-%m-%d"), "stocks": stocks}
     json.dump(doc, open(DATA, "w"), ensure_ascii=False)
@@ -195,10 +247,6 @@ def main():
         return
 
     write_output("changed", "true")
-    body = (f"📈 *ウォッチリスト更新* ({now.strftime('%m/%d %H:%M')} JST)\n"
-            + "\n".join(lines)
-            + (f"\n\n⚠️ *規制・指定の変化*\n" + "\n".join(reg_lines) if reg_lines else "")
-            + f"\n<{PAGE}|アプリを開く>")
     try:
         code = post_chat(body); print("chat posted", code)
     except Exception as e:

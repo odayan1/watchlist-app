@@ -34,7 +34,7 @@ jobs:
         id: update
         env:
           GCHAT_WEBHOOK: ${{ secrets.GCHAT_WEBHOOK }}
-          JQUANTS_API_KEY: ${{ secrets.JQUANTS_API_KEY }}
+          # 2026-11-01: J-Quants解約に伴い JQUANTS_API_KEY は不要になった（規制チェックはJPX公式サイトから取得）
         run: |
           if [ "${{ github.event.inputs.force }}" = "true" ]; then
             python3 .github/scripts/update.py --force
